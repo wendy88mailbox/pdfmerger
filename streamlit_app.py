@@ -33,54 +33,77 @@ except ImportError as e:
     st.stop()
 
 # ============ 設定區 ============
-# 優先使用 config.py（如果存在），否則使用預設值
+# 優先使用 Streamlit Secrets（雲端部署），其次 config.py（本地），最後預設值
 try:
-    from config import (
-        FOLDER_ID,
-        PROCESSED_FOLDER,
-        PASSWORDS as DEFAULT_PASSWORDS,
-        SUPPORTED_IMAGES,
-        SUPPORTED_PDFS,
-        SCOPES
-    )
-except ImportError:
-    # 使用預設值（向後相容）
-    FOLDER_ID = "1FSq4zxAMfpk0Zxw2fte8reRn2yvgLw6n"
-    PROCESSED_FOLDER = "已處理"
-    DEFAULT_PASSWORDS = ["93509136", "93509157"]
+    # 嘗試從 Streamlit Secrets 讀取
+    FOLDER_ID = st.secrets.get("FOLDER_ID", "1FSq4zxAMfpk0Zxw2fte8reRn2yvgLw6n")
+    PROCESSED_FOLDER = st.secrets.get("PROCESSED_FOLDER", "已處理")
+    DEFAULT_PASSWORDS = [st.secrets.get("PASSWORD1", "93509136"), st.secrets.get("PASSWORD2", "93509157")]
     SUPPORTED_IMAGES = ['.jpg', '.jpeg', '.png', '.heic', '.heif']
     SUPPORTED_PDFS = ['.pdf']
     SCOPES = ['https://www.googleapis.com/auth/drive']
+except:
+    # 本地執行時從 config.py 讀取
+    try:
+        from config import (
+            FOLDER_ID,
+            PROCESSED_FOLDER,
+            PASSWORDS as DEFAULT_PASSWORDS,
+            SUPPORTED_IMAGES,
+            SUPPORTED_PDFS,
+            SCOPES
+        )
+    except ImportError:
+        # 使用預設值
+        FOLDER_ID = "1FSq4zxAMfpk0Zxw2fte8reRn2yvgLw6n"
+        PROCESSED_FOLDER = "已處理"
+        DEFAULT_PASSWORDS = ["93509136", "93509157"]
+        SUPPORTED_IMAGES = ['.jpg', '.jpeg', '.png', '.heic', '.heif']
+        SUPPORTED_PDFS = ['.pdf']
+        SCOPES = ['https://www.googleapis.com/auth/drive']
 
 # ============ Google Drive 功能 ============
 
 @st.cache_resource
 def get_google_drive_service():
     """取得 Google Drive 服務連線"""
-    creds = None
-    token_path = Path.home() / '.google_drive_token.pickle'
-    
-    if token_path.exists():
-        with open(token_path, 'rb') as token:
-            creds = pickle.load(token)
-    
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            credentials_path = Path(__file__).parent / 'credentials.json'
-            if not credentials_path.exists():
-                st.error("❌ 找不到 credentials.json 檔案！")
-                st.stop()
-            
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(credentials_path), SCOPES)
-            creds = flow.run_local_server(port=8502)
+    # 檢查是否在 Streamlit Cloud（有 secrets）
+    if "credentials" in st.secrets:
+        # 使用 Service Account（Streamlit Cloud）
+        from google.oauth2 import service_account
         
-        with open(token_path, 'wb') as token:
-            pickle.dump(creds, token)
-    
-    return build('drive', 'v3', credentials=creds)
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["credentials"],
+            scopes=SCOPES
+        )
+        return build('drive', 'v3', credentials=credentials)
+    else:
+        # 本地執行，使用 OAuth
+        creds = None
+        token_path = Path.home() / '.google_drive_token.pickle'
+        
+        if token_path.exists():
+            with open(token_path, 'rb') as token:
+                creds = pickle.load(token)
+        
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                credentials_path = Path(__file__).parent / 'credentials.json'
+                if not credentials_path.exists():
+                    st.error("❌ 找不到 credentials.json 檔案！")
+                    st.info("💡 本地執行需要 credentials.json，或在 Streamlit Cloud 設定 Secrets")
+                    st.stop()
+                
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    str(credentials_path), SCOPES)
+                creds = flow.run_local_server(port=8502)
+            
+            with open(token_path, 'wb') as token:
+                pickle.dump(creds, token)
+        
+        return build('drive', 'v3', credentials=creds)
 
 def get_folder_info(service, folder_id):
     """取得資料夾資訊"""
