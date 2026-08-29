@@ -120,13 +120,18 @@ def list_files_in_folder(service, folder_id):
         q=query,
         spaces='drive',
         fields='files(id, name, mimeType, size, modifiedTime)',
-        orderBy='name'
+        orderBy='name',
+        supportsAllDrives=True,  # ← 支援共享雲端硬碟
+        includeItemsFromAllDrives=True  # ← 包含共享雲端硬碟的項目
     ).execute()
     return results.get('files', [])
 
 def download_file(service, file_id, destination_path):
     """從 Google Drive 下載檔案"""
-    request = service.files().get_media(fileId=file_id)
+    request = service.files().get_media(
+        fileId=file_id,
+        supportsAllDrives=True  # ← 支援共享雲端硬碟
+    )
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
@@ -148,20 +153,26 @@ def upload_file(service, file_path, folder_id):
     file = service.files().create(
         body=file_metadata,
         media_body=media,
-        fields='id'
+        fields='id',
+        supportsAllDrives=True  # ← 支援共享雲端硬碟
     ).execute()
     return file
 
 def move_file(service, file_id, new_parent_id):
     """移動檔案"""
-    file = service.files().get(fileId=file_id, fields='parents').execute()
+    file = service.files().get(
+        fileId=file_id, 
+        fields='parents',
+        supportsAllDrives=True  # ← 支援共享雲端硬碟
+    ).execute()
     previous_parents = ",".join(file.get('parents'))
     
     service.files().update(
         fileId=file_id,
         addParents=new_parent_id,
         removeParents=previous_parents,
-        fields='id, parents'
+        fields='id, parents',
+        supportsAllDrives=True  # ← 支援共享雲端硬碟
     ).execute()
 
 def create_folder(service, folder_name, parent_id):
@@ -171,7 +182,11 @@ def create_folder(service, folder_name, parent_id):
         'mimeType': 'application/vnd.google-apps.folder',
         'parents': [parent_id]
     }
-    folder = service.files().create(body=file_metadata, fields='id').execute()
+    folder = service.files().create(
+        body=file_metadata, 
+        fields='id',
+        supportsAllDrives=True  # ← 支援共享雲端硬碟
+    ).execute()
     return folder
 
 # ============ PDF 處理功能 ============
@@ -463,7 +478,12 @@ def main():
                     
                     # 檢查「已處理」資料夾
                     processed_query = f"name='{PROCESSED_FOLDER}' and '{FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-                    processed_results = service.files().list(q=processed_query, fields='files(id)').execute()
+                    processed_results = service.files().list(
+                        q=processed_query, 
+                        fields='files(id)',
+                        supportsAllDrives=True,  # ← 支援共享雲端硬碟
+                        includeItemsFromAllDrives=True  # ← 包含共享雲端硬碟的項目
+                    ).execute()
                     processed_folders = processed_results.get('files', [])
                     
                     if processed_folders:
