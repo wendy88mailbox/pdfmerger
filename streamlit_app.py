@@ -53,6 +53,8 @@ def list_files_in_folder(service, folder_id):
 
 def download_file(service, file_id, destination_path):
     """從 Google Drive 下載檔案"""
+    from googleapiclient.http import MediaIoBaseDownload
+    
     request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
