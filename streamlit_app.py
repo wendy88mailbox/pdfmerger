@@ -14,7 +14,7 @@ st.set_page_config(
 # ============ 定義常數 ============
 SUPPORTED_IMAGES = ['.jpg', '.jpeg', '.png', '.heic', '.heif']
 SUPPORTED_PDFS = ['.pdf']
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+SCOPES = ['https://www.googleapis.com/auth/drive']  # 改回完整權限
 
 # ============ 初始化 ============
 @st.cache_resource
@@ -24,6 +24,7 @@ def init_system():
     from googleapiclient.discovery import build
     
     folder_id = st.secrets.get("FOLDER_ID", "1FSq4zxAMfpk0Zxw2fte8reRn2yvgLw6n")
+    processed_folder = st.secrets.get("PROCESSED_FOLDER", "已處理")
     passwords = [
         st.secrets.get("PASSWORD1", "93509136"), 
         st.secrets.get("PASSWORD2", "93509157")
@@ -35,7 +36,7 @@ def init_system():
     )
     service = build('drive', 'v3', credentials=credentials)
     
-    return service, folder_id, passwords
+    return service, folder_id, processed_folder, passwords
 
 # ============ Google Drive 功能 ============
 def list_files_in_folder(service, folder_id):
@@ -65,6 +66,55 @@ def download_file(service, file_id, destination_path):
     with open(destination_path, 'wb') as f:
         f.write(fh.getvalue())
     return destination_path
+
+def upload_file(service, file_path, folder_id):
+    """上傳檔案到 Google Drive"""
+    from googleapiclient.http import MediaFileUpload
+    
+    file_metadata = {
+        'name': file_path.name,
+        'parents': [folder_id]
+    }
+    media = MediaFileUpload(str(file_path), resumable=True)
+    file = service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id, webViewLink',
+        supportsAllDrives=True
+    ).execute()
+    return file
+
+def move_file(service, file_id, new_parent_id):
+    """移動檔案"""
+    file = service.files().get(
+        fileId=file_id, 
+        fields='parents',
+        supportsAllDrives=True
+    ).execute()
+    previous_parents = ",".join(file.get('parents', []))
+    
+    if previous_parents:
+        service.files().update(
+            fileId=file_id,
+            addParents=new_parent_id,
+            removeParents=previous_parents,
+            fields='id, parents',
+            supportsAllDrives=True
+        ).execute()
+
+def create_folder(service, folder_name, parent_id):
+    """建立資料夾"""
+    file_metadata = {
+        'name': folder_name,
+        'mimeType': 'application/vnd.google-apps.folder',
+        'parents': [parent_id]
+    }
+    folder = service.files().create(
+        body=file_metadata, 
+        fields='id',
+        supportsAllDrives=True
+    ).execute()
+    return folder
 
 # ============ PDF 處理功能 ============
 def unlock_pdf(pdf_path, passwords):
@@ -134,7 +184,7 @@ def main():
     # 初始化系統
     try:
         with st.spinner("🔧 正在連接 Google Drive..."):
-            service, FOLDER_ID, DEFAULT_PASSWORDS = init_system()
+            service, FOLDER_ID, PROCESSED_FOLDER, DEFAULT_PASSWORDS = init_system()
         st.success("✅ 已連接到 Google Drive")
     except Exception as e:
         st.error(f"❌ 初始化失敗: {e}")
@@ -152,8 +202,12 @@ def main():
         use_date = st.checkbox("加上日期時間", value=True, key="use_date")
         custom_name = st.text_input("自訂前綴", value="合併檔案", key="custom_name")
         
+        st.subheader("📤 上傳設定")
+        upload_to_drive = st.checkbox("上傳到 Google Drive", value=True, key="upload_drive")
+        move_originals = st.checkbox("移動原始檔案到「已處理」", value=True, key="move_files")
+        
         st.markdown("---")
-        st.info("💡 **使用流程**\n\n1️⃣ 上傳檔案到 Google Drive\n2️⃣ 選擇要合併的檔案\n3️⃣ 點擊開始合併\n4️⃣ 下載合併後的 PDF")
+        st.info("💡 **使用流程**\n\n1️⃣ 上傳檔案到 Google Drive\n2️⃣ 選擇要合併的檔案\n3️⃣ 點擊開始合併\n4️⃣ 下載或查看 Drive 中的檔案")
     
     st.subheader("📁 檔案清單")
     
@@ -217,16 +271,15 @@ def main():
                 progress_bar.progress((idx + 1) / len(selected_files) * 0.3)
                 file_path = temp_path / file['name']
                 download_file(service, file['id'], file_path)
-                downloaded_files.append(file_path)
+                downloaded_files.append((file['id'], file_path))
             
             # 處理檔案
             status_text.text("🔧 處理檔案...")
             pdf_files = []
             unlocked_files = []
-            locked_files = []
             
-            for idx, file_path in enumerate(downloaded_files):
-                progress_bar.progress(0.3 + (idx + 1) / len(downloaded_files) * 0.4)
+            for idx, (file_id, file_path) in enumerate(downloaded_files):
+                progress_bar.progress(0.3 + (idx + 1) / len(downloaded_files) * 0.3)
                 ext = file_path.suffix.lower()
                 
                 if ext in SUPPORTED_IMAGES:
@@ -241,21 +294,65 @@ def main():
             
             # 合併 PDF
             status_text.text("📑 合併 PDF...")
-            progress_bar.progress(0.8)
+            progress_bar.progress(0.7)
             
             today = datetime.now().strftime("%Y%m%d-%H%M")
             output_filename = f"{custom_name}-{today}.pdf" if use_date else f"{custom_name}.pdf"
             output_path = temp_path / output_filename
             
             if merge_pdfs(pdf_files, output_path):
+                # 上傳到 Google Drive
+                upload_success = False
+                drive_link = None
+                
+                if upload_to_drive:
+                    try:
+                        status_text.text("⬆️ 上傳到 Google Drive...")
+                        progress_bar.progress(0.8)
+                        uploaded_file = upload_file(service, output_path, FOLDER_ID)
+                        drive_link = uploaded_file.get('webViewLink')
+                        upload_success = True
+                    except Exception as e:
+                        st.warning(f"⚠️ 上傳失敗: {e}")
+                        st.info("💡 但您仍可以下載檔案")
+                
+                # 移動原始檔案
+                if move_originals and upload_success:
+                    try:
+                        status_text.text("🗂️ 整理檔案...")
+                        progress_bar.progress(0.9)
+                        
+                        # 檢查「已處理」資料夾
+                        processed_query = f"name='{PROCESSED_FOLDER}' and '{FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                        processed_results = service.files().list(
+                            q=processed_query, 
+                            fields='files(id)',
+                            supportsAllDrives=True,
+                            includeItemsFromAllDrives=True
+                        ).execute()
+                        processed_folders = processed_results.get('files', [])
+                        
+                        if processed_folders:
+                            processed_folder_id = processed_folders[0]['id']
+                        else:
+                            processed_folder = create_folder(service, PROCESSED_FOLDER, FOLDER_ID)
+                            processed_folder_id = processed_folder['id']
+                        
+                        # 移動檔案
+                        for file_id, _ in downloaded_files:
+                            move_file(service, file_id, processed_folder_id)
+                    except Exception as e:
+                        st.warning(f"⚠️ 移動檔案失敗: {e}")
+                
                 progress_bar.progress(1.0)
                 status_text.empty()
                 st.success("🎉 合併完成！")
                 
-                # 下載按鈕
+                # 讀取合併後的 PDF
                 with open(output_path, 'rb') as f:
                     pdf_data = f.read()
                 
+                # 下載按鈕
                 st.download_button(
                     label="📥 下載合併後的 PDF",
                     data=pdf_data,
@@ -265,7 +362,15 @@ def main():
                     use_container_width=True
                 )
                 
-                st.info("💡 下載後，原始檔案仍保留在 Google Drive 中")
+                # 顯示 Drive 連結
+                if upload_success and drive_link:
+                    st.success("✅ 檔案已上傳到 Google Drive")
+                    st.markdown(f"### [🔗 在 Google Drive 中開啟]({drive_link})")
+                
+                if move_originals and upload_success:
+                    st.info(f"📂 原始檔案已移動到「{PROCESSED_FOLDER}」資料夾")
+                else:
+                    st.info("💡 原始檔案仍保留在 Google Drive 中")
                 
                 # 統計資訊
                 col1, col2 = st.columns(2)
