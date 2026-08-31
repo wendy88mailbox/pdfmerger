@@ -86,4 +86,5 @@ if st.button("🧪 測試列出檔案"):
         st.error(f"❌ 列出檔案失敗: {e}")
         import traceback
         with st.expander("查看詳細錯誤"):
+            st.code(traceback.format_exc()) 
  
